@@ -1,308 +1,278 @@
 document.addEventListener('DOMContentLoaded', () => {
   const status = document.getElementById('status');
-  const workspaceSelect = document.getElementById('workspaceSelect');
-  const folderSelect = document.getElementById('folderSelect');
-  const fetchWorkspacesBtn = document.getElementById('fetchWorkspaces');
+  const configSection = document.getElementById('configSection');
+  const toggleConfigBtn = document.getElementById('toggleConfig');
+  const workspaceSection = document.getElementById('workspaceSection');
+  const toggleWorkspaceBtn = document.getElementById('toggleWorkspace');
+  const currentWorkspaceDisplay = document.getElementById('currentWorkspace');
   const loadFoldersBtn = document.getElementById('loadFolders');
-  let config = {};
 
-  // Load saved configuration
-  chrome.storage.local.get(['poznoteConfig'], (result) => {
+  let config = {};
+  let selectedWorkspace = '';
+  let currentFolderMap = {};
+  let foldersLoadedForCurrentWorkspace = false;
+
+  // Chargement persistant
+  chrome.storage.sync.get(['poznoteConfig', 'lastWorkspace'], (result) => {
     if (result.poznoteConfig) {
       config = result.poznoteConfig;
       document.getElementById('appUrl').value = config.appUrl || '';
       document.getElementById('username').value = config.username || '';
       document.getElementById('password').value = config.password || '';
+      collapseConfigSection();
+    }
 
-      if (config.workspace) {
-        let exists = false;
-        for (let i = 0; i < workspaceSelect.options.length; i++) {
-          if (workspaceSelect.options[i].value === config.workspace) {
-            exists = true;
-            break;
-          }
-        }
-        if (!exists && config.workspace !== 'Poznote') {
-          workspaceSelect.add(new Option(config.workspace, config.workspace));
-        }
-        workspaceSelect.value = config.workspace;
-      }
-
-      if (config.folder) {
-        let exists = false;
-        const val = config.folder_id || config.folder;
-        for (let i = 0; i < folderSelect.options.length; i++) {
-          if (folderSelect.options[i].value == val) {
-            exists = true;
-            break;
-          }
-        }
-        if (!exists) {
-          const opt = new Option(`📁 ${config.folder}`, val);
-          opt.dataset.path = config.folder;
-          folderSelect.add(opt);
-        }
-        folderSelect.value = val;
-      }
+    if (result.lastWorkspace) {
+      selectedWorkspace = result.lastWorkspace;
+      showCurrentWorkspace(selectedWorkspace);
+      collapseWorkspaceSection();
     }
   });
 
-  async function resolveProfileId(tempConfig) {
-    const profiles = await chrome.runtime.sendMessage({ type: 'listProfiles', config: tempConfig });
-    if (profiles.error) throw new Error(profiles.error);
-
-    const targetUsername = tempConfig.username.toLowerCase();
-    const profile = profiles.find(p => p.username.toLowerCase() === targetUsername || p.email?.toLowerCase() === targetUsername);
-
-    if (!profile) {
-      throw new Error(`Profile not found for user "${tempConfig.username}"`);
+  // Restauration des dossiers
+  chrome.storage.session.get(['folderMap', 'lastLoadedWorkspace'], (result) => {
+    if (result.lastLoadedWorkspace === selectedWorkspace && result.folderMap) {
+      currentFolderMap = result.folderMap;
+      populateFolderSelect(currentFolderMap);
+      foldersLoadedForCurrentWorkspace = true;
+      loadFoldersBtn.style.display = 'none';
+      updateStatus(`Dossiers prêts pour "${selectedWorkspace}"`, 'green');
     }
-    return profile.id;
+  });
+
+  function collapseConfigSection() {
+    configSection.classList.remove('expanded');
+    configSection.classList.add('collapsed');
+    toggleConfigBtn.style.display = 'block';
   }
 
-  // Fetch Workspaces
-  fetchWorkspacesBtn.addEventListener('click', async () => {
-    let rawUrl = document.getElementById('appUrl').value.trim().replace(/\/+$/, '');
-    if (rawUrl && !/^https?:\/\//i.test(rawUrl)) rawUrl = 'https://' + rawUrl;
+  function expandConfigSection() {
+    configSection.classList.remove('collapsed');
+    configSection.classList.add('expanded');
+    toggleConfigBtn.style.display = 'none';
+  }
 
-    const tempConfig = {
-      appUrl: rawUrl,
+  function collapseWorkspaceSection() {
+    workspaceSection.classList.remove('expanded');
+    workspaceSection.classList.add('collapsed');
+    toggleWorkspaceBtn.style.display = 'block';
+  }
+
+  function expandWorkspaceSection() {
+    workspaceSection.classList.remove('collapsed');
+    workspaceSection.classList.add('expanded');
+    toggleWorkspaceBtn.style.display = 'none';
+  }
+
+  function showCurrentWorkspace(name) {
+    currentWorkspaceDisplay.textContent = `Workspace actuel : ${name}`;
+    currentWorkspaceDisplay.style.display = 'block';
+  }
+
+  toggleConfigBtn.addEventListener('click', expandConfigSection);
+
+  toggleWorkspaceBtn.addEventListener('click', () => {
+    expandWorkspaceSection();
+    loadFoldersBtn.style.display = 'block';
+    foldersLoadedForCurrentWorkspace = false;
+  });
+
+  // Sauvegarde config
+  document.getElementById('saveConfig').addEventListener('click', () => {
+    config = {
+      appUrl: document.getElementById('appUrl').value.trim().replace(/\/+$/, ''),
       username: document.getElementById('username').value.trim(),
       password: document.getElementById('password').value.trim()
     };
 
-    if (!tempConfig.appUrl || !tempConfig.username || !tempConfig.password) {
-      status.textContent = '⚠️ URL, Username and Password are required!';
-      status.style.color = 'red';
+    if (!config.appUrl || !config.username || !config.password) {
+      updateStatus('⚠️ Tous les champs sont obligatoires !', 'red');
       return;
     }
 
-    status.textContent = '⏳ Fetching workspaces...';
-    status.style.color = 'orange';
-
-    try {
-      // Step 1: Resolve Profile ID automatically
-      const userId = await resolveProfileId(tempConfig);
-      tempConfig.userId = userId;
-
-      // Step 2: Fetch Workspaces
-      const response = await chrome.runtime.sendMessage({ type: 'listWorkspaces', config: tempConfig });
-
-      if (response.error) {
-        status.textContent = '❌ Error: ' + response.error;
-        status.style.color = 'red';
-        return;
-      }
-
-      workspaceSelect.innerHTML = '';
-      if (Array.isArray(response)) {
-        response.forEach(ws => {
-          const val = ws.name || ws;
-          workspaceSelect.add(new Option(val, val));
-        });
-        status.textContent = '✅ Workspaces fetched!';
-        status.style.color = 'green';
-
-        // Temporarily store userId in config object for Save button
-        config.userId = userId;
-      } else {
-        status.textContent = '❌ Invalid API response';
-        status.style.color = 'red';
-      }
-    } catch (e) {
-      status.textContent = '❌ Error: ' + e.message;
-      status.style.color = 'red';
-    }
+    chrome.storage.sync.set({ poznoteConfig: config }, () => {
+      updateStatus('✅ Configuration sauvegardée !', 'green');
+      collapseConfigSection();
+    });
   });
 
-  // Save Configuration
-  document.getElementById('saveConfig').addEventListener('click', async () => {
-    let rawUrl = document.getElementById('appUrl').value.trim().replace(/\/+$/, '');
-    if (rawUrl && !/^https?:\/\//i.test(rawUrl)) rawUrl = 'https://' + rawUrl;
-
-    const username = document.getElementById('username').value.trim();
-    const password = document.getElementById('password').value.trim();
-
-    if (!rawUrl || !username || !password) {
-      status.textContent = '⚠️ All fields are required!';
-      status.style.color = 'red';
+  // Charger workspaces
+  document.getElementById('loadWorkspaces').addEventListener('click', async () => {
+    if (!config.appUrl) {
+      updateStatus('⚠️ Configure d\'abord Poznote', 'red');
       return;
     }
 
-    status.textContent = '⏳ Saving configuration...';
-    status.style.color = 'orange';
+    updateStatus('⏳ Chargement des workspaces...', 'orange');
 
     try {
-      // Ensure we have the userId
-      const tempConfig = { appUrl: rawUrl, username, password };
-      const userId = await resolveProfileId(tempConfig);
+      const response = await chrome.runtime.sendMessage({ type: 'loadWorkspaces', config });
+      if (response.error) throw new Error(response.error);
 
-      const selectedOption = folderSelect.options[folderSelect.selectedIndex];
-      const folderPath = selectedOption ? (selectedOption.dataset.path || selectedOption.text.replace(/^📁 /, '')) : '';
+      let workspacesArray = Array.isArray(response) ? response :
+                          (response.data || response.workspaces || []);
 
-      config = {
-        appUrl: rawUrl,
-        username,
-        password,
-        userId: userId,
-        workspace: workspaceSelect.value,
-        folder: folderPath,
-        folder_id: folderSelect.value
-      };
+      workspacesArray.sort((a, b) => (a.name || '').localeCompare(b.name || ''));
 
-      chrome.storage.local.set({ poznoteConfig: config }, () => {
-        status.textContent = '✅ Configuration saved!';
-        status.style.color = 'green';
-        document.getElementById('appUrl').value = config.appUrl;
+      const select = document.getElementById('workspaceSelect');
+      select.innerHTML = '<option value="">-- Choisir un workspace --</option>';
+
+      workspacesArray.forEach(ws => {
+        select.add(new Option(ws.name, ws.name));
       });
-    } catch (e) {
-      status.textContent = '❌ Error: ' + e.message;
-      status.style.color = 'red';
+
+      updateStatus(`✅ ${workspacesArray.length} workspace(s) disponible(s)`, 'green');
+    } catch (err) {
+      updateStatus('❌ ' + err.message, 'red');
     }
   });
 
-  // Load Folders
-  loadFoldersBtn.addEventListener('click', async () => {
-    let rawUrl = document.getElementById('appUrl').value.trim().replace(/\/+$/, '');
-    if (rawUrl && !/^https?:\/\//i.test(rawUrl)) rawUrl = 'https://' + rawUrl;
+  // Sélection workspace
+  document.getElementById('workspaceSelect').addEventListener('change', (e) => {
+    selectedWorkspace = e.target.value;
+    if (selectedWorkspace) {
+      chrome.storage.sync.set({ lastWorkspace: selectedWorkspace });
+      showCurrentWorkspace(selectedWorkspace);
+      collapseWorkspaceSection();
+      updateStatus(`Workspace : ${selectedWorkspace}`, 'blue');
 
-    const username = document.getElementById('username').value.trim();
-    const password = document.getElementById('password').value.trim();
+      document.getElementById('folderSelect').innerHTML = '<option value="">-- Racine (aucun dossier) --</option>';
+      currentFolderMap = {};
+      chrome.storage.session.remove(['folderMap', 'lastLoadedWorkspace']);
+      foldersLoadedForCurrentWorkspace = false;
+      loadFoldersBtn.style.display = 'block';
+    }
+  });
 
-    if (!rawUrl || !username || !password) {
-      status.textContent = '⚠️ URL, Username and Password are required!';
-      status.style.color = 'red';
+  // Charger les dossiers
+  document.getElementById('loadFolders').addEventListener('click', async () => {
+    if (!selectedWorkspace) {
+      updateStatus('⚠️ Choisis d\'abord un workspace', 'orange');
       return;
     }
 
-    status.textContent = '⏳ Loading folders...';
-    status.style.color = 'orange';
+    updateStatus('⏳ Chargement des dossiers...', 'orange');
 
     try {
-      // Step 1: Resolve Profile ID if not already known
-      let userId = config.userId;
-      if (!userId) {
-        userId = await resolveProfileId({ appUrl: rawUrl, username, password });
-        config.userId = userId; // Store for this session
-      }
+      const response = await chrome.runtime.sendMessage({
+        type: 'loadFolders',
+        config,
+        workspace: selectedWorkspace
+      });
+      if (response.error) throw new Error(response.error);
 
-      // Step 2: Load Folders
-      const tempConfig = {
-        appUrl: rawUrl,
-        username,
-        password,
-        userId,
-        workspace: workspaceSelect.value
-      };
+      const folders = response.folders || [];
 
-      const response = await chrome.runtime.sendMessage({ type: 'loadFolders', config: tempConfig });
+      const folderSelect = document.getElementById('folderSelect');
+      folderSelect.innerHTML = '<option value="">-- Racine (aucun dossier) --</option>';
 
-      if (response.error) {
-        status.textContent = '❌ Error: ' + response.error;
-        status.style.color = 'red';
-        return;
-      }
-
-      const currentFolder = folderSelect.value;
-      folderSelect.innerHTML = '<option value="">📁 Root (No Folder)</option>';
-
+      const folderMap = new Map();
       let count = 0;
-      function addFolders(folders) {
-        if (!folders) return;
-        const folderList = Array.isArray(folders) ? folders : Object.values(folders);
-        folderList.forEach(folder => {
-          const name = folder.path || folder.name;
-          const option = new Option(`📁 ${name}`, folder.id);
-          option.dataset.path = name;
-          folderSelect.add(option);
-          count++;
-          if (folder.children) addFolders(folder.children);
-        });
-      }
 
-      addFolders(response);
+      folders.sort((a, b) => (a.path || '').localeCompare(b.path || ''));
 
-      // Restore previous selection if it still exists
-      if (currentFolder) {
-        folderSelect.value = currentFolder;
-      }
+      folders.forEach(folder => {
+        const folderId = folder.id;
+        const path = folder.path || folder.name || 'Dossier sans nom';
 
-      status.textContent = `✅ ${count} folder(s) loaded!`;
-      status.style.color = 'green';
-    } catch (error) {
-      status.textContent = '❌ Error: ' + error.message;
-      status.style.color = 'red';
-      console.error(error);
+        const displayText = `📁 ${path}`;
+
+        if (folderId) {
+          folderMap.set(path, folderId);
+        }
+
+        folderSelect.add(new Option(displayText, path));
+        count++;
+      });
+
+      currentFolderMap = Object.fromEntries(folderMap);
+      chrome.storage.session.set({
+        folderMap: currentFolderMap,
+        lastLoadedWorkspace: selectedWorkspace
+      });
+
+      foldersLoadedForCurrentWorkspace = true;
+      loadFoldersBtn.style.display = 'none';
+
+      updateStatus(`✅ ${count} dossier(s) chargé(s)`, 'green');
+    } catch (err) {
+      updateStatus('❌ ' + err.message, 'red');
     }
   });
 
-  // Save Note
+  function populateFolderSelect(map) {
+    const folderSelect = document.getElementById('folderSelect');
+    folderSelect.innerHTML = '<option value="">-- Racine (aucun dossier) --</option>';
+
+    Object.keys(map)
+      .sort((a, b) => a.localeCompare(b))
+      .forEach(path => {
+        folderSelect.add(new Option(`📁 ${path}`, path));
+      });
+  }
+
+  // Créer la note avec capture d'écran (base64)
   document.getElementById('saveNote').addEventListener('click', async () => {
-    const selectedFolder = folderSelect.value;
-
-    let rawUrl = document.getElementById('appUrl').value.trim().replace(/\/+$/, '');
-    if (rawUrl && !/^https?:\/\//i.test(rawUrl)) rawUrl = 'https://' + rawUrl;
-    const username = document.getElementById('username').value.trim();
-    const password = document.getElementById('password').value.trim();
-
-    if (!rawUrl || !username || !password) {
-      status.textContent = '⚠️ URL, Username and Password are required!';
-      status.style.color = 'red';
+    if (!selectedWorkspace) {
+      updateStatus('⚠️ Aucun workspace sélectionné', 'red');
       return;
     }
 
-    status.textContent = '⏳ Preparing note...';
-    status.style.color = 'orange';
+    const selectedPath = document.getElementById('folderSelect').value;
+    const folderId = currentFolderMap[selectedPath] || null;
+
+    const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+    let pageTitle = tab.title || 'Page sans titre';
+    let pageUrl = tab.url;
+
+    updateStatus('Capture d\'écran en cours...', 'blue');
+
+    let screenshotDataUrl = null;
+    try {
+      screenshotDataUrl = await chrome.tabs.captureVisibleTab(null, {
+        format: 'png'
+      });
+    } catch (err) {
+      console.error('Erreur capture :', err);
+      updateStatus('⚠️ Impossible de capturer l\'écran (page chrome:// ou extension ?)', 'orange');
+    }
+
+    // Contenu enrichi
+    let noteContent = `
+      <p><strong>🔗 URL :</strong> <a href="${pageUrl}" target="_blank">${pageUrl}</a></p>
+      <p><strong>Titre :</strong> ${pageTitle}</p>
+    `;
+
+    if (screenshotDataUrl) {
+      noteContent += `
+        <p><strong>Capture d'écran de la page :</strong></p>
+        <img src="${screenshotDataUrl}" alt="Capture d'écran de ${pageTitle}" style="max-width:100%; height:auto; border:1px solid #ddd; border-radius:4px;">
+      `;
+    } else {
+      noteContent += `<p><em>Pas de capture d'écran disponible</em></p>`;
+    }
+
+    const noteData = {
+      heading: `🔗 ${pageTitle}`,
+      content: noteContent,
+      tags: '',
+      folder_id: folderId,
+      workspace: selectedWorkspace
+    };
+
+    updateStatus('Création de la note avec capture...', 'orange');
 
     try {
-      const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-      if (!tab) {
-        status.textContent = '❌ Could not access current tab.';
-        status.style.color = 'red';
-        return;
-      }
-
-      // Ensure we have the userId
-      let userId = config.userId;
-      if (!userId || config.username !== username || config.appUrl !== rawUrl) {
-        userId = await resolveProfileId({ appUrl: rawUrl, username, password });
-        config.userId = userId;
-        config.appUrl = rawUrl;
-        config.username = username;
-        config.password = password;
-      }
-
-      const tempConfig = { appUrl: rawUrl, username, password, userId };
-      const pageTitle = tab.title || 'Untitled Page';
-      const pageUrl = tab.url;
-      const noteContent = `<a href="${pageUrl}" target="_blank">${pageUrl}</a>`;
-
-      const selectedOption = folderSelect.options[folderSelect.selectedIndex];
-      const selectedFolderName = selectedOption.dataset.path || selectedOption.text.replace(/^📁 /, '');
-
-      const noteData = {
-        heading: `${pageTitle}`,
-        content: noteContent,
-        tags: '',
-        folder_name: selectedFolderName,
-        folder_id: selectedFolder,
-        workspace: workspaceSelect.value || config.workspace || 'Poznote'
-      };
-
-      status.textContent = 'Creating note...';
-      const response = await chrome.runtime.sendMessage({ type: 'createNote', config: tempConfig, noteData });
-
-      if (response.error) {
-        status.textContent = '❌ Failed: ' + response.error;
-        status.style.color = 'red';
-      } else {
-        status.textContent = '💾 Note created successfully!';
-        status.style.color = 'green';
-      }
-    } catch (error) {
-      status.textContent = '❌ Error: ' + error.message;
-      status.style.color = 'red';
-      console.error(error);
+      const response = await chrome.runtime.sendMessage({ type: 'createNote', config, noteData });
+      if (response.error) throw new Error(response.error);
+      updateStatus('💾 Note + capture créée avec succès !', 'green');
+    } catch (err) {
+      updateStatus('❌ ' + err.message, 'red');
     }
   });
+
+  function updateStatus(text, color) {
+    status.textContent = text;
+    status.style.color = color;
+  }
 });

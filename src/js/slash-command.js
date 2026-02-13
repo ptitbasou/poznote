@@ -1100,7 +1100,63 @@
         const common = getCommonSlashCommands();
         return [
             common.noteReference,
-            common.cancel
+            common.cancel,
+            {
+                id: 'date',
+                icon: 'fa-calendar-alt',
+                label: t('slash_menu.date', null, 'Date'),
+                action: function () {
+                    const input = savedEditableElement;
+                    if (!input || input.tagName !== 'INPUT') return;
+
+                    // Capture insertion position now (selection is already restored by deleteSlashText)
+                    const insertionStart = (typeof input.selectionStart === 'number') ? input.selectionStart : Math.max(0, slashOffset);
+                    const insertionEnd = (typeof input.selectionEnd === 'number') ? input.selectionEnd : insertionStart;
+                    
+                    const dateInput = document.createElement('input');
+                    dateInput.type = 'date';
+                    dateInput.style.position = 'fixed';
+                    dateInput.style.top = '-1000px';
+                    dateInput.style.left = '-1000px';
+                    document.body.appendChild(dateInput);
+
+                    dateInput.addEventListener('change', function () {
+                        const date = dateInput.value;
+                        if (date) {
+                            const formattedDate = new Date(date).toLocaleDateString() + ' ';
+                            const text = input.value;
+
+                            const safeStart = Math.max(0, Math.min(insertionStart, text.length));
+                            const safeEnd = Math.max(safeStart, Math.min(insertionEnd, text.length));
+
+                            if (typeof input.setRangeText === 'function') {
+                                input.setRangeText(formattedDate, safeStart, safeEnd, 'end');
+                            } else {
+                                input.value = text.substring(0, safeStart) + formattedDate + text.substring(safeEnd);
+                            }
+
+                            const caretPos = safeStart + formattedDate.length;
+                            input.dispatchEvent(new Event('input', { bubbles: true }));
+                            input.focus();
+                            try {
+                                input.setSelectionRange(caretPos, caretPos);
+                            } catch (e) { }
+                            setTimeout(() => {
+                                try {
+                                    input.setSelectionRange(caretPos, caretPos);
+                                } catch (e) { }
+                            }, 0);
+                        }
+                        document.body.removeChild(dateInput);
+                    });
+
+                    if (dateInput.showPicker) {
+                        dateInput.showPicker();
+                    } else {
+                        dateInput.click();
+                    }
+                }
+            }
         ];
     }
 
